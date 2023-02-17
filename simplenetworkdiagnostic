@@ -1,0 +1,86 @@
+# Importing the 'ImportExcel' module 
+Import-Module ImportExcel
+
+# Specifying the path to the Excel file
+$excelFile = "FilePath" #ENTER YOUR FILEPATH HERE
+
+# Importing the MAC addresses and device names from the Excel file (Replace "YourWorkSheet" with the correct sheet name within the excel file.)
+$macAddresses = Import-Excel $excelFile -WorksheetName 'YourWorkSheet' | Select-Object "MAC-COLUMN", "DEVICENAME-COLUMN" # Replace "MAC-COLUMN" and "DEVICE-NAME-COLUMN" with the actual column names for mac addresses and device names, respectively.
+
+# Arrays to store the results for online and offline devices
+$onlineResults = @()
+$offlineResults = @()
+
+
+# Regex pattern for a valid MAC address
+$macAddressPattern = "^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$"
+
+# Looping through each MAC address
+foreach ($mac in $macAddresses) {
+  try {
+    # Checking if the MAC address matches the regex pattern
+    if (!($mac.'MAC-COLUMN' -match $macAddressPattern)) {
+      Write-Host "Error: Invalid MAC address $($mac.'MAC-COLUMN')" # Replace "MAC-COLUMN"
+      continue
+    }
+
+    # Getting the neighbor information for the device with the specified MAC address
+    $neighbor = Get-NetNeighbor -AddressFamily IPv4 | Where-Object {$_.LinkLayerAddress -eq $mac.'MAC-COLUMN'} # Replace "MAC-COLUMN"
+  } catch {
+    Write-Host "Error: Unable to get neighbor information for MAC address $($mac.'MAC-COLUMN')" # Replace "MAC-COLUMN"
+    continue
+  }
+
+  try {
+    # Getting the IP address associated with the neighbor
+    $ip = $neighbor.IPAddress
+    }catch {
+    Write-Host "Error: Unable to get IP address for MAC address $($mac.'MAC-COLUMN')" # Replace "MAC-COLUMN"
+
+    # If unable to retrieve IP address, get device name from excel document
+    $deviceName = $mac.'DEVICENAME-COLUMN' # Replace "DEVICENAME-COLUMN"
+
+    # Storing the results in an object
+    $result = New-Object -TypeName PSObject
+    $result | Add-Member -MemberType NoteProperty -Name "MacAddress" -Value $($mac.'MAC-COLUMN') # Replace "MAC-COLUMN"
+    $result | Add-Member -MemberType NoteProperty -Name "DeviceName" -Value $deviceName
+    $result | Add-Member -MemberType NoteProperty -Name "Online" -Value $False
+
+    # Adding the result to the offline array
+    $offlineResults += $result
+    continue
+  }
+    try {
+    # Getting NetBIOS name from IP address
+    $nbname = Resolve-DnsName -Name $ip -Type ANY | Select-Object -ExpandProperty NameHost
+  } catch {
+    Write-Host "Error: Unable to get NetBIOS name for IP address $ip"
+    continue
+  }
+
+  # Pinging the IP address
+  $ping = Test-Connection $ip -Count 1 -Quiet
+# Storing the results in an object
+  $result = New-Object -TypeName PSObject
+  $result | Add-Member -MemberType NoteProperty -Name "MacAddress" -Value $($mac.'MAC-COLUMN') # Replace "MAC-COLUMN"
+  $result | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value $ip
+  $result | Add-Member -MemberType NoteProperty -Name "NetBIOSName" -Value $nbname
+  $result | Add-Member -MemberType NoteProperty -Name "Online" -Value $ping
+
+  # Adding the result to the appropriate array based on the ping result
+  if ($ping) {
+    $onlineResults += $result
+  } else {
+    $offlineResults += $result
+  }
+
+}
+
+# Getting the current date in the desired format
+$date = Get-Date -Format "dd-MM-yyyy"
+
+# Exporting the results for online devices to a CSV file
+
+$onlineResults | Export-Csv -Path "SPECIFY-SAVE-LOCATION/$date-onlinelog.csv" -NoTypeInformation # Specify save location, do not change the "$date-onlinelog.csv" part
+
+$offlineResults | Export-Csv -Path "SPECIFY-SAVE-LOCATION/$date-offlinelog.csv" -NoTypeInformation # Specify save location, do not change the "$date-offlinelog.csv" part
