@@ -1,0 +1,97 @@
+$connectionstring = "Server=localhost;Database=testDB;Trusted_Connection=True;"
+$connection=New-Object System.Data.SqlClient.SqlConnection
+$connection.ConnectionString=$connectionstring
+$connection.Open()
+$jobs=@()
+$testOutput="C:\Users\tarik.gacanovic\Desktop\outfile.txt"
+
+$query1 = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;"
+Invoke-Sqlcmd -ConnectionString $connectionstring -Query $query1
+
+$count="SELECT COUNT(*) FROM Tasks WHERE Enabled='1'"
+
+$maxConcurrentJobs=5
+$jobsTotalresult=Invoke-Sqlcmd -ServerInstance 'localhost' -Database 'testDB' -Query $count
+$jobsTotal=$jobsTotalresult.Column1
+
+
+
+$SQLQueryID="SELECT ID FROM Tasks WHERE Enabled=1"
+$SQLIDCommand=New-Object System.Data.SqlClient.SqlCommand ($SQLQueryID, $connection)
+
+$SQLQuerySELECT="SELECT ExecPath, Param1, Param2, Param3 FROM Tasks WHERE Enabled=1"
+$SQLselectCommand=New-Object System.Data.SqlClient.SqlCommand ($SQLQuerySELECT, $connection)
+
+$tID=$SQLIDCommand.ExecuteScalar() 
+$SQLReader=$SQLselectCommand.ExecuteReader()
+
+$data = @()
+while($SQLReader.Read()){
+    $row = @{
+        ExecPath = $SQLReader.GetString(0)
+        Param1 = $SQLReader.GetString(1)
+        Param2 = $SQLReader.GetString(2)
+        Param3 = $SQLReader.GetString(3)
+    }
+    $data += New-Object PSObject -Property $row
+    $jobsTotal=$data.Count
+}
+$SQLReader.Close()
+$q=0
+
+function JobCompleted($receivedState) {
+    write-host 'JOBCOMPLETED WITH' $receivedState
+    
+    if($receivedState.State -eq 'Completed') { 
+        $Status=2
+        $Note=$q
+        $Finished=$job.PSEndTime
+        $ID=$receivedState.Id
+        #$Note="Task finished successfully '$jid'"
+        $SQLQueryUPDATE="UPDATE TaskLogs SET Status=$Status, Finished=getdate() WHERE ID=$rid"
+        $SQLUPDATEcmd=New-Object System.Data.SqlClient.SqlCommand($SQLQueryUPDATE, $connection)
+        $SQLUPDATEcmd.ExecuteNonQuery()
+        $SQLQueryUPDATE | out-file -FilePath $testOutput -Append
+    }
+    elseif($receivedState -eq 'Failed') {
+        $Status=3
+        #$Note="Task failed"
+    }
+    elseif ($receivedState -ne 'Completed' -or $receivedState -ne 'Failed') {
+        $Status=9
+        #$Note="NOT DEFINED"
+    }
+}
+
+foreach($currow in $data){
+    while(($jobs | Where-Object{$_.State -eq 'Running'}).Count -ge $maxConcurrentJobs){
+        start-sleep -Milliseconds 500
+    }
+ 
+    $env:Path=$currow.ExecPath
+    $job=Start-Job -scriptblock {& $env:Path}
+    $jobs+=$job
+        
+    foreach($runningjob in $job){
+            $rid=$runningjob.Id
+        if($runningjob.State -eq 'Running'){
+            
+            $Status=1
+            $Note="R--, " + $runningjob.Name
+            $Created=$runningjob.PSBeginTime
+        }
+
+        $SQLQueryWRITE="INSERT INTO TaskLogs(ID, tID, Status, Created, Finished, Note) Values($rid, $tID, $Status, getdate(), null, '$Note')" 
+        $SQLWRITEcmd=New-Object System.Data.SqlClient.SqlCommand($SQLQueryWRITE, $connection)
+        $SQLWRITEcmd.ExecuteNonQuery()
+
+        $SQLQueryWRITE | out-file -FilePath $testOutput -Append
+          
+        Register-ObjectEvent -InputObject $runningjob StateChanged -Action {
+            $currentState=$EventArgs.JobStateInfo
+            JobCompleted($currentState, $rid)
+            Unregister-Event $eventsubsciber.SourceIdentifier
+        }
+        
+    }
+}
